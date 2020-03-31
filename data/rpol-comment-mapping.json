@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "username": {
+      "type": "keyword"
+    },
+    "text": {
+      "type": "text",
+      "analyzer": "english"
+    },
+    "score": {
+      "type": "long"
+    },
+    "timestamp": {
+      "type": "´date"
+    }
+  }
+}
