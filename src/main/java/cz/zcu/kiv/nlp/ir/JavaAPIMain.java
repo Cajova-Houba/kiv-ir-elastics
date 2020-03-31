@@ -1,5 +1,8 @@
 package cz.zcu.kiv.nlp.ir;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
 import org.elasticsearch.action.bulk.BulkRequest;
@@ -26,6 +29,7 @@ import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.persistent.StartPersistentTaskAction;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.transport.RemoteClusterAware;
 import org.elasticsearch.transport.client.PreBuiltTransportClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +40,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
@@ -56,6 +61,9 @@ public class JavaAPIMain {
     public static final int BULK_SIZE = 2000;
 
     public static final String DATA_FOLDER = "data";
+
+    public static final String DATA_ORIGINAL_DATE_FORMAT = "EEE MMM dd HH:mm:ss yyyy z";
+    public static final String DATA_ELASTIC_DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZZ";
 
     //name of index
     static final String indexName = "rpol-comments";
@@ -81,6 +89,7 @@ public class JavaAPIMain {
         }
 
         indexDocuments(jsonDocuments, client, indexName);
+        client.close();
 
 
         //2) XContentBuilder - ES helper - same as 1) but with different approach
@@ -150,7 +159,6 @@ public class JavaAPIMain {
         //bulkIndex(docsXContent, client);
 
         //close connection
-        client.close();
     }
 
     private static void setIndexMapping(AbstractClient client, String indexName) throws IOException {
@@ -178,17 +186,27 @@ public class JavaAPIMain {
         log.debug("Indexing {} documents.", jsonDocuments.size());
 
         for (String jsonDocument : jsonDocuments) {
-            request.add(new IndexRequest(indexName).source(XContentType.JSON, jsonDocument));
+            request.add(new IndexRequest(indexName).source(jsonDocument, XContentType.JSON));
             currentBulkSize++;
             cntr++;
 
             // if the bulk size was reached of last document was processed
             // execute the request
-            if (currentBulkSize == BULK_SIZE || cntr == (docCount-1)) {
+            if (currentBulkSize == BULK_SIZE || cntr == docCount) {
                 bulkCntr++;
                 log.debug("Executing bulk {} with {} documents.", bulkCntr, currentBulkSize);
 
-                client.bulk(request);
+                client.bulk(request, new ActionListener<BulkResponse>() {
+                    @Override
+                    public void onResponse(BulkResponse bulkItemResponses) {
+                        log.debug("Ok.");
+                    }
+
+                    @Override
+                    public void onFailure(Exception e) {
+                        log.warn("Failed to execute bulk request: ", e);
+                    }
+                });
                 request = new BulkRequest();
                 currentBulkSize = 0;
             }
@@ -206,8 +224,32 @@ public class JavaAPIMain {
         return client;
     }
 
+    /**
+     * Loads data from json file and transforms the timestamps to correct date format.
+     * @param fileName
+     * @return
+     * @throws IOException
+     */
     private static List<String> loadJsonData(String fileName) throws IOException {
-        return Files.readAllLines(new File(DATA_FOLDER+"/"+fileName).toPath());
+        log.debug("Loading documents from '{}'.", fileName);
+        List<String> jsonDocumentsPreTransform = Files.readAllLines(new File(DATA_FOLDER+"/"+fileName).toPath());
+        List<String> jsonDocumentsTransformed = new ArrayList<>();
+        ObjectMapper mapperFrom = new ObjectMapper();
+        mapperFrom.setDateFormat(new SimpleDateFormat(DATA_ORIGINAL_DATE_FORMAT, Locale.ENGLISH));
+
+        ObjectMapper mapperTo = new ObjectMapper();
+        mapperTo.setDateFormat(new SimpleDateFormat(DATA_ELASTIC_DATE_FORMAT, Locale.ENGLISH));
+
+        Iterator<String> documentsToTransformIt = jsonDocumentsPreTransform.iterator();
+        while (documentsToTransformIt.hasNext()) {
+            String jsonToTransform = documentsToTransformIt.next();
+            documentsToTransformIt.remove();
+
+            Comment c = mapperFrom.readValue(jsonToTransform, Comment.class);
+            jsonDocumentsTransformed.add(mapperTo.writeValueAsString(c));
+        }
+
+        return jsonDocumentsTransformed;
     }
 
     public static void searchDocument(Client client, String index, String type,

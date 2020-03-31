@@ -11,7 +11,8 @@
       "type": "long"
     },
     "timestamp": {
-      "type": "´date"
+      "type": "date",
+      "format": "yyyy-MM-dd'T'HH:mm:ssZZ"
     }
   }
 }
