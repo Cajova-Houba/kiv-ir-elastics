@@ -1,33 +1,37 @@
 package cz.zcu.kiv.nlp.ir;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.http.HttpHost;
+import org.elasticsearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.elasticsearch.action.admin.cluster.health.ClusterHealthResponse;
-import org.elasticsearch.action.admin.indices.mapping.put.PutMappingRequest;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.delete.DeleteRequest;
 import org.elasticsearch.action.delete.DeleteResponse;
+import org.elasticsearch.action.get.GetRequest;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
-import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.action.update.UpdateRequest;
-import org.elasticsearch.client.Client;
-import org.elasticsearch.client.support.AbstractClient;
-import org.elasticsearch.client.transport.TransportClient;
+import org.elasticsearch.client.RequestOptions;
+import org.elasticsearch.client.RestClient;
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.client.indices.CreateIndexRequest;
+import org.elasticsearch.client.indices.GetIndexRequest;
+import org.elasticsearch.client.indices.GetIndexResponse;
+import org.elasticsearch.client.indices.PutMappingRequest;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.cluster.health.ClusterIndexHealth;
-import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.transport.TransportAddress;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.query.QueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.transport.client.PreBuiltTransportClient;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
@@ -66,40 +70,59 @@ public class JavaAPIMain {
 
     public static void main(String args[]) throws IOException, ExecutionException, InterruptedException {
 
-        AbstractClient client = createClient("valesz-cluster", "localhost", 9300);
+        RestHighLevelClient client = createClient("valesz-cluster", "localhost", 9200);
         printConnectionInfo(client);
 
-        if (isSearchMode(args)) {
-            log.debug("Search mode.");
-            searchTrumpBad(client, INDEX_NAME);
-            searchTrumpGood(client, INDEX_NAME);
-            searchTrumpGoodFilterByScore(client, INDEX_NAME, 50);
-        } if (isUpdateMode(args)) {
-            log.debug("Update mode.");
-            indexTestDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT, TEST_DOCUMENT_ID);
-            getDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
-            updateDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID, "text", "This is updated text.");
-            getDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
-            deleteDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
-        } else  {
-            log.debug("Standard mode. Uploading data.");
-            setIndexMapping(client, INDEX_NAME);
+        try {
+            createIndexIfNotExist(client, INDEX_NAME);
 
-            List<String> jsonDocuments = loadJsonData("rpol-comments.json");
-            if (jsonDocuments.isEmpty()) {
-                log.warn("No documents to index.");
-                return;
+            if (isSearchMode(args)) {
+                log.debug("Search mode.");
+                searchTrumpBad(client, INDEX_NAME);
+                searchTrumpGood(client, INDEX_NAME);
+                searchTrumpGoodFilterByScore(client, INDEX_NAME, 50);
+            } else if (isUpdateMode(args)) {
+                log.debug("Update mode.");
+                indexTestDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT, TEST_DOCUMENT_ID);
+                getDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
+                updateDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID, "text", "This is updated text.");
+                getDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
+                deleteDocument(client, TEST_INDEX_NAME, TEST_DOCUMENT_ID);
+            } else {
+                log.debug("Standard mode. Uploading data.");
+                setIndexMapping(client, INDEX_NAME);
+
+                List<String> jsonDocuments = loadJsonData("rpol-comments.json");
+                if (jsonDocuments.isEmpty()) {
+                    log.warn("No documents to index.");
+                } else {
+                    indexDocuments(jsonDocuments, client, INDEX_NAME);
+                }
+
             }
-
-            indexDocuments(jsonDocuments, client, INDEX_NAME);
+        } catch (Exception ex) {
+            log.error("Exception: ", ex);
         }
 
         client.close();
     }
 
-    private static void indexTestDocument(AbstractClient client, String indexName, String jsonDocument, String documentId) {
+    private static void createIndexIfNotExist(RestHighLevelClient client, String indexName) throws IOException {
+        log.debug("Checking if index '{}' exists.", indexName);
+
+        GetIndexRequest getIndexRequest = new GetIndexRequest(indexName);
+        boolean indexExists = client.indices().exists(getIndexRequest, RequestOptions.DEFAULT);
+
+        if (!indexExists) {
+            log.debug("Index does not exist, creating new one.");
+            client.indices().create(new CreateIndexRequest(indexName), RequestOptions.DEFAULT);
+        }
+    }
+
+    private static void indexTestDocument(RestHighLevelClient client, String indexName, String jsonDocument, String documentId) throws IOException {
         log.debug("Indexing test document to index '{}'", indexName);
-        client.prepareIndex(indexName, "_doc", documentId).setSource(jsonDocument, XContentType.JSON).get();
+        client.index(new IndexRequest(indexName).id(documentId).source(jsonDocument, XContentType.JSON),
+                RequestOptions.DEFAULT);
         log.debug("Done.");
     }
 
@@ -114,7 +137,7 @@ public class JavaAPIMain {
      * @param indexName
      * @param minCommentScore
      */
-    private static void searchTrumpGoodFilterByScore(AbstractClient client, String indexName, int minCommentScore) {
+    private static void searchTrumpGoodFilterByScore(RestHighLevelClient client, String indexName, int minCommentScore) throws IOException {
         log.debug("Performing 'trump good' query with reddit score at least '{}'.", minCommentScore);
         org.elasticsearch.index.query.BoolQueryBuilder qb = QueryBuilders.boolQuery();
         qb.must().add(QueryBuilders.matchQuery("text", "trump"));
@@ -122,13 +145,8 @@ public class JavaAPIMain {
         qb.minimumShouldMatch(1);
         qb.filter(QueryBuilders.rangeQuery("score").gte(minCommentScore));
 
+        SearchResponse response = executeSearchRequest(client, indexName, qb);
 
-        SearchResponse response = client.prepareSearch(indexName)
-                .setSearchType(SearchType.DFS_QUERY_THEN_FETCH)     //try change to SearchType.QUERY_THEN_FETCH - see the change in score
-                .setQuery(qb) //Query match - simplest query
-                .setFrom(0).setSize(30)                         //can be used for pagination
-                .setExplain(true)
-                .get();
         //print response
         printSearchResponse(response);
     }
@@ -138,20 +156,14 @@ public class JavaAPIMain {
      * @param client
      * @param indexName
      */
-    private static void searchTrumpGood(AbstractClient client, String indexName) {
+    private static void searchTrumpGood(RestHighLevelClient client, String indexName) throws IOException {
         log.debug("Performing 'trump good' query.");
         org.elasticsearch.index.query.BoolQueryBuilder qb = QueryBuilders.boolQuery();
         qb.must().add(QueryBuilders.matchQuery("text", "trump"));
         qb.should(QueryBuilders.matchQuery("text", "good blessed best capable leader savior greatest clever smartest hero"));
         qb.minimumShouldMatch(1);
 
-
-        SearchResponse response = client.prepareSearch(indexName)
-                .setSearchType(SearchType.DFS_QUERY_THEN_FETCH)     //try change to SearchType.QUERY_THEN_FETCH - see the change in score
-                .setQuery(qb) //Query match - simplest query
-                .setFrom(0).setSize(30)                         //can be used for pagination
-                .setExplain(true)
-                .get();
+        SearchResponse response = executeSearchRequest(client, indexName, qb);
         //print response
         printSearchResponse(response);
     }
@@ -161,35 +173,37 @@ public class JavaAPIMain {
      * @param client
      * @param indexName
      */
-    private static void searchTrumpBad(AbstractClient client, String indexName) {
+    private static void searchTrumpBad(RestHighLevelClient client, String indexName) throws IOException {
         log.debug("Performing 'trump bad' query.");
         org.elasticsearch.index.query.BoolQueryBuilder qb = QueryBuilders.boolQuery();
         qb.must().add(QueryBuilders.matchQuery("text", "trump"));
         qb.should(QueryBuilders.matchQuery("text", "bad traitor horrible worst conman incapable incompetent evil"));
         qb.minimumShouldMatch(1);
 
-
-        SearchResponse response = client.prepareSearch(indexName)
-                .setSearchType(SearchType.DFS_QUERY_THEN_FETCH)     //try change to SearchType.QUERY_THEN_FETCH - see the change in score
-                .setQuery(qb) //Query match - simplest query
-                .setFrom(0).setSize(30)                         //can be used for pagination
-                .setExplain(true)
-                .get();
+        SearchResponse response = executeSearchRequest(client, indexName, qb);
         //print response
         printSearchResponse(response);
+    }
+
+    private static SearchResponse executeSearchRequest(RestHighLevelClient client, String indexName, QueryBuilder queryBuilder) throws IOException {
+        SearchRequest sr = new SearchRequest(indexName);
+        sr.source(new SearchSourceBuilder()
+                .query(queryBuilder));
+
+        return client.search(sr, RequestOptions.DEFAULT);
     }
 
     private static boolean isSearchMode(String[] args) {
         return args.length > 0 && SEARCH_MODE.equals(args[0]);
     }
 
-    private static void setIndexMapping(AbstractClient client, String indexName) throws IOException {
+    private static void setIndexMapping(RestHighLevelClient client, String indexName) throws IOException {
         log.debug("Setting mapping in index '{}'.", indexName);
 
         PutMappingRequest request = new PutMappingRequest(indexName);
         String mappingJson = loadMapping("rpol-comment-mapping.json");
         request.source(mappingJson, XContentType.JSON);
-        client.admin().indices().putMapping(request);
+        client.indices().putMapping(request, RequestOptions.DEFAULT);
 
         log.debug("Done.");
     }
@@ -198,7 +212,7 @@ public class JavaAPIMain {
         return String.join("",Files.readAllLines(new File(DATA_FOLDER+"/"+mappingFileName).toPath()));
     }
 
-    private static void indexDocuments(List<String> jsonDocuments, AbstractClient client, String indexName) {
+    private static void indexDocuments(List<String> jsonDocuments, RestHighLevelClient client, String indexName) throws IOException {
         BulkRequest request = new BulkRequest();
         int currentBulkSize = 0;
         int bulkCntr = 0;
@@ -218,21 +232,17 @@ public class JavaAPIMain {
                 bulkCntr++;
                 log.debug("Executing bulk {} with {} documents.", bulkCntr, currentBulkSize);
 
-                client.bulk(request);
+                client.bulk(request, RequestOptions.DEFAULT);
                 request = new BulkRequest();
                 currentBulkSize = 0;
             }
         }
     }
 
-    private static AbstractClient createClient(String clusterName, String host, int port) throws UnknownHostException {
-        Settings settings = Settings.builder()
-                .put("cluster.name", clusterName)
-                .build();
-        TransportClient client = new PreBuiltTransportClient(settings);
-
-//        TransportClient client = new PreBuiltTransportClient(Settings.EMPTY);
-        client.addTransportAddress(new TransportAddress(InetAddress.getByName(host), port));
+    private static RestHighLevelClient createClient(String clusterName, String host, int port) throws UnknownHostException {
+        RestHighLevelClient client = new RestHighLevelClient(RestClient.builder(
+                new HttpHost(host, port, "http")
+        ));
         return client;
     }
 
@@ -282,9 +292,10 @@ public class JavaAPIMain {
         System.out.println("");
     }
 
-    private static void getDocument(Client client, String index, String id) {
+    private static void getDocument(RestHighLevelClient client, String index, String id) throws IOException {
 
-        GetResponse getResponse = client.prepareGet().setIndex(index).setId(id).get();
+        GetRequest getRequest = new GetRequest(index).id(id);
+        GetResponse getResponse = client.get(getRequest, RequestOptions.DEFAULT);
 
         if (!getResponse.isExists()) {
             log.info("Document with id:" + id + " not found");
@@ -304,7 +315,7 @@ public class JavaAPIMain {
     }
 
     //allows partial updates  - not whole doc
-    private static void updateDocument(Client client, String index,
+    private static void updateDocument(RestHighLevelClient client, String index,
                                        String id, String field, Object newValue) throws IOException, ExecutionException, InterruptedException {
         log.debug("Updating document '{}'.", id);
 
@@ -316,12 +327,12 @@ public class JavaAPIMain {
                 .field(field, newValue)
                 .endObject());
 
-        client.update(updateRequest).get();
+        client.update(updateRequest, RequestOptions.DEFAULT);
 
         log.debug("Done.");
     }
 
-    private static void deleteDocument(Client client, String index, String id) {
+    private static void deleteDocument(RestHighLevelClient client, String index, String id) throws IOException {
 
         log.debug("Deleting document with id '{}'.", id);
 
@@ -329,15 +340,15 @@ public class JavaAPIMain {
         deleteRequest.index(index);
         deleteRequest.id(id);
 
-        DeleteResponse response = client.delete(deleteRequest).actionGet();
+        DeleteResponse response = client.delete(deleteRequest, RequestOptions.DEFAULT);
         log.info("Information on the deleted document:");
         log.info("Index: " + response.getIndex());
         log.info("Id: " + response.getId());
         log.info("Version: " + response.getVersion());
     }
 
-    private static void printConnectionInfo(Client client) {
-        ClusterHealthResponse health = client.admin().cluster().prepareHealth().get();
+    private static void printConnectionInfo(RestHighLevelClient client) throws IOException {
+        ClusterHealthResponse health = client.cluster().health(new ClusterHealthRequest(), RequestOptions.DEFAULT);
         String clusterName = health.getClusterName();
 
         log.info("Connected to Cluster: " + clusterName);
