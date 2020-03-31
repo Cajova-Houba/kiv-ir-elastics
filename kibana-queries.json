@@ -73,3 +73,13 @@ GET _search
     }
   }
 }
+
+POST /test-index/_update/td-1
+{
+  "doc": {
+    "text": "This is updated text."
+  }
+}
+
+DELETE /test-index/_doc/td-1
+

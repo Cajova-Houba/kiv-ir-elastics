@@ -18,7 +18,6 @@ import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.client.indices.CreateIndexRequest;
 import org.elasticsearch.client.indices.GetIndexRequest;
-import org.elasticsearch.client.indices.GetIndexResponse;
 import org.elasticsearch.client.indices.PutMappingRequest;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
 import org.elasticsearch.cluster.health.ClusterIndexHealth;
@@ -201,7 +200,7 @@ public class JavaAPIMain {
         log.debug("Setting mapping in index '{}'.", indexName);
 
         PutMappingRequest request = new PutMappingRequest(indexName);
-        String mappingJson = loadMapping("rpol-comment-mapping.json");
+        String mappingJson = loadMapping("mappings.json");
         request.source(mappingJson, XContentType.JSON);
         client.indices().putMapping(request, RequestOptions.DEFAULT);
 
