@@ -1,0 +1,75 @@
+GET _search
+{
+  "query":{
+    "bool": {
+      "must": [
+        {
+          "match": {
+            "text": "trump"
+          }
+        }  
+      ],
+      "should": [
+        {
+          "match": {
+            "text": "bad traitor horrible worst conman incapable incompetent evil"
+          }
+        }
+      ],
+	  "minimum_should_match": 1,
+    }
+  }
+}
+
+GET _search
+{
+  "query":{
+    "bool": {
+      "must": [
+        {
+          "match": {
+            "text": "trump"
+          }
+        }  
+      ],
+      "should": [
+        {
+          "match": {
+            "text": "good blessed best capable leader savior greatest clever smartest hero"
+          }
+        }
+      ],
+	  "minimum_should_match": 1,
+    }
+  }
+}
+
+GET _search
+{
+  "query":{
+    "bool": {
+      "must": [
+        {
+          "match": {
+            "text": "trump"
+          }
+        }  
+      ],
+      "should": [
+        {
+          "match": {
+            "text": "good blessed best capable leader savior greatest clever smartest hero"
+          }
+        }
+      ],
+      "minimum_should_match": 1,
+      "filter": {
+          "range": {
+            "score": {
+              "gte": 50
+            }
+          }
+      }
+    }
+  }
+}
